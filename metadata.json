@@ -1,0 +1,6 @@
+{
+  "name": "Portal Autosol - PDI Jujuy",
+  "description": "Sistema moderno y avanzado de gestión de inventarios y control de stock real para el portal operativo de VW Autosol, sincronizado mediante API con Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
