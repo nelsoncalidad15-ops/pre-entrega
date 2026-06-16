@@ -8,6 +8,7 @@ import {
 
 import { Vehicle, ViewType, DashboardStats } from './types';
 import Sidebar from './components/Sidebar';
+import { INITIAL_VEHICLES } from './data/initialData';
 
 // Modular Views
 import DashboardView from './views/DashboardView';
@@ -53,7 +54,11 @@ export default function App() {
       }
       setError(null);
     } catch (err: any) {
-      setError(err.message || 'Error de conexión');
+      setVehicles(INITIAL_VEHICLES);
+      if (INITIAL_VEHICLES.length > 0 && !selectedVehicle) {
+        setSelectedVehicle(INITIAL_VEHICLES[0]);
+      }
+      setError('Modo estatico: los cambios no se guardan porque GitHub Pages no ejecuta el servidor.');
     } finally {
       setLoading(false);
     }
