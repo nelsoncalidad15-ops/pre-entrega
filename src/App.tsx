@@ -27,6 +27,9 @@ interface SheetRow extends Vehicle {
 }
 
 const SHEET_STORAGE_KEY = 'gestion-pre-entrega-sheet-url';
+const DEFAULT_SHEET_URL =
+  'https://docs.google.com/spreadsheets/d/e/2PACX-1vRthvWfLuzDbgewKzhZV7Od5nYGTPdajM_mFZUEQthaOIGu8U_jCzT-4j3UIk9UMQWHc3V8zXMmxqPU/pub?gid=0&single=true&output=csv';
+const DIRECT_SHEET_URL = clean((import.meta as any).env?.VITE_SHEET_URL || DEFAULT_SHEET_URL);
 const bundledRows = INITIAL_VEHICLES.map(normalizeVehicle);
 
 const fieldAliases: Record<keyof Vehicle, string[]> = {
@@ -224,12 +227,11 @@ export default function App() {
   const [rows, setRows] = useState<SheetRow[]>(bundledRows);
   const [query, setQuery] = useState('');
   const [stateFilter, setStateFilter] = useState('TODOS');
-  const [sheetUrl, setSheetUrl] = useState(() => localStorage.getItem(SHEET_STORAGE_KEY) ?? '');
   const [syncState, setSyncState] = useState<SyncState>('fallback');
   const [lastSync, setLastSync] = useState('');
   const [selectedVin, setSelectedVin] = useState(bundledRows[0]?.vin ?? '');
 
-  const syncSheet = async (url = sheetUrl) => {
+  const syncSheet = async (url = DIRECT_SHEET_URL || localStorage.getItem(SHEET_STORAGE_KEY) || '') => {
     const csvUrl = toCsvUrl(url);
     if (!csvUrl) {
       setRows(bundledRows);
@@ -258,8 +260,9 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (sheetUrl) {
-      syncSheet(sheetUrl);
+    const url = DIRECT_SHEET_URL || localStorage.getItem(SHEET_STORAGE_KEY) || '';
+    if (url) {
+      syncSheet(url);
     }
   }, []);
 
@@ -319,7 +322,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-7xl gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[minmax(0,1fr)_390px]">
+      <main className="mx-auto max-w-7xl space-y-5 px-4 py-5 sm:px-6">
         <section className="space-y-5">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <DataPoint label="Unidades" value={String(stats.total)} icon={Car} />
@@ -330,7 +333,7 @@ export default function App() {
           </div>
 
           <div className="rounded-lg border border-slate-200 bg-white p-3">
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_160px_120px]">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_160px_120px_150px]">
               <label className="relative block">
                 <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                 <input
@@ -359,8 +362,49 @@ export default function App() {
               >
                 Limpiar
               </button>
+              <button
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-wait disabled:opacity-70"
+                disabled={syncState === 'syncing'}
+                onClick={() => syncSheet()}
+              >
+                <RefreshCw size={16} className={syncState === 'syncing' ? 'animate-spin' : ''} />
+                Actualizar
+              </button>
             </div>
           </div>
+
+          {selected && (
+            <div className="rounded-lg border border-slate-200 bg-white p-4">
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs font-black uppercase text-slate-500">Ficha de unidad</div>
+                  <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <h2 className="text-3xl font-black text-slate-950">{selected.interno}</h2>
+                    <span className="font-mono text-sm font-bold text-slate-500">{selected.vin}</span>
+                  </div>
+                  <p className="mt-1 text-sm font-bold text-slate-700">{selected.vehiculo}</p>
+                </div>
+                <StatusBadge state={selected.opState} />
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <DataPoint label="Box / ubicacion" value={selected.boxUbicacion || selected.ubicacion} icon={MapPin} />
+                <DataPoint label="Llave" value={selected.llave} icon={KeyRound} />
+                <DataPoint label="Manual" value={selected.manual} icon={BookOpenCheck} />
+                <DataPoint label="Combustible" value={selected.combustible} icon={Fuel} />
+                <DataPoint label="Pago" value={selected.pago} />
+                <DataPoint label="Facturado" value={selected.facturado} />
+                <DataPoint label="Dominio" value={selected.dominio} />
+                <DataPoint label="Ordenes" value={selected.ordenes} />
+              </div>
+
+              <div className="mt-3 grid gap-3 lg:grid-cols-3">
+                <DataPoint label="Estado / informe" value={[selected.estado, selected.informe, selected.otroInforme].filter(Boolean).join('\n')} icon={AlertTriangle} />
+                <DataPoint label="Destino" value={[selected.destinoActual, selected.destinoTerminal].filter(Boolean).join('\n')} icon={MapPin} />
+                <DataPoint label="Venta / entrega" value={[selected.venta, selected.vendedor, selected.exhibicion, selected.preEntregado].filter(Boolean).join('\n')} />
+              </div>
+            </div>
+          )}
 
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
@@ -406,66 +450,6 @@ export default function App() {
             </div>
           </div>
         </section>
-
-        <aside className="space-y-5">
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className="text-sm font-black uppercase text-slate-700">Conexion Sheet</h2>
-              <FileSpreadsheet size={18} className="text-slate-500" />
-            </div>
-            <input
-              className="h-10 w-full rounded-md border border-slate-300 px-3 text-xs font-semibold outline-none focus:border-slate-900"
-              value={sheetUrl}
-              onChange={(event) => setSheetUrl(event.target.value)}
-              placeholder="Pegar URL de Google Sheets o CSV publicado"
-            />
-            <button
-              className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-slate-900 text-sm font-bold text-white transition hover:bg-slate-700 disabled:cursor-wait disabled:opacity-70"
-              disabled={syncState === 'syncing'}
-              onClick={() => syncSheet()}
-            >
-              <RefreshCw size={16} className={syncState === 'syncing' ? 'animate-spin' : ''} />
-              Sincronizar
-            </button>
-            <p className="mt-3 text-xs leading-5 text-slate-500">
-              La hoja debe estar publicada o accesible con enlace. La web solo visualiza datos, no modifica el Sheet.
-            </p>
-          </div>
-
-          {selected && (
-            <div className="rounded-lg border border-slate-200 bg-white p-4">
-              <div className="mb-4 flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-xs font-black uppercase text-slate-500">Ficha de unidad</div>
-                  <h2 className="mt-1 text-2xl font-black text-slate-950">{selected.interno}</h2>
-                  <div className="font-mono text-xs font-bold text-slate-500">{selected.vin}</div>
-                </div>
-                <StatusBadge state={selected.opState} />
-              </div>
-
-              <div className="space-y-3">
-                <DataPoint label="Vehiculo" value={selected.vehiculo} icon={Car} />
-                <div className="grid grid-cols-2 gap-3">
-                  <DataPoint label="Box" value={selected.boxUbicacion || selected.ubicacion} icon={MapPin} />
-                  <DataPoint label="Llave" value={selected.llave} icon={KeyRound} />
-                  <DataPoint label="Manual" value={selected.manual} icon={BookOpenCheck} />
-                  <DataPoint label="Combustible" value={selected.combustible} icon={Fuel} />
-                </div>
-                <DataPoint label="Estado de unidad" value={selected.estado || selected.informe} icon={ShieldCheck} />
-                <DataPoint label="Informe / novedad" value={[selected.informe, selected.otroInforme].filter(Boolean).join('\n')} icon={AlertTriangle} />
-                <div className="grid grid-cols-2 gap-3">
-                  <DataPoint label="Pago" value={selected.pago} />
-                  <DataPoint label="Facturado" value={selected.facturado} />
-                  <DataPoint label="Dominio" value={selected.dominio} />
-                  <DataPoint label="Ordenes" value={selected.ordenes} />
-                </div>
-                <DataPoint label="Destino" value={[selected.destinoActual, selected.destinoTerminal].filter(Boolean).join('\n')} icon={MapPin} />
-                <DataPoint label="Venta / vendedor" value={[selected.venta, selected.vendedor].filter(Boolean).join('\n')} />
-                <DataPoint label="Exhibicion / pre-entregado" value={[selected.exhibicion, selected.preEntregado].filter(Boolean).join('\n')} />
-              </div>
-            </div>
-          )}
-        </aside>
       </main>
     </div>
   );
