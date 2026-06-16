@@ -1,359 +1,472 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Car, Layers, AlertTriangle, FileSpreadsheet, History, Search, 
-  LayoutDashboard, Plus, RefreshCw, CheckCircle, HelpCircle, Key, 
-  MapPin, BookOpen, LogOut, Moon, Sun, Fuel, Shield, X
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  BookOpenCheck,
+  Car,
+  CheckCircle2,
+  Clock3,
+  FileSpreadsheet,
+  Fuel,
+  KeyRound,
+  MapPin,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 
-import { Vehicle, ViewType, DashboardStats } from './types';
-import Sidebar from './components/Sidebar';
 import { INITIAL_VEHICLES } from './data/initialData';
+import { Vehicle } from './types';
 
-// Modular Views
-import DashboardView from './views/DashboardView';
-import SearchView from './views/SearchView';
-import DistributionView from './views/DistributionView';
-import FollowupView from './views/FollowupView';
-import HistoryView from './views/HistoryView';
+type SyncState = 'idle' | 'syncing' | 'online' | 'fallback' | 'error';
 
-export default function App() {
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [currentView, setCurrentView] = useState<ViewType>('inicio');
-  const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
-  const [apiKey, setApiKey] = useState('autosol_pdi_secret_token_2026');
-  
-  // Custom manual Add Vehicle fields
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [newVehicle, setNewVehicle] = useState({
-    interno: '',
-    vin: '',
-    vehiculo: '',
-    color: '',
-    recepcion: new Date().toLocaleDateString('es-AR'),
-    pago: 'NO PAGADO',
-    boxUbicacion: '1-C-1',
-    box: '1',
-    ubicacion: 'C-1',
-    llave: 'A',
-    estado: 'OK',
-  });
+interface SheetRow extends Vehicle {
+  family: string;
+  searchable: string;
+}
 
-  // Load inventory from our API
-  const fetchInventory = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/inventory');
-      if (!res.ok) throw new Error('No se pudo conectar con el portal de base de datos.');
-      const data = await res.json();
-      setVehicles(data);
-      if (data.length > 0 && !selectedVehicle) {
-        setSelectedVehicle(data[0]);
-      }
-      setError(null);
-    } catch (err: any) {
-      setVehicles(INITIAL_VEHICLES);
-      if (INITIAL_VEHICLES.length > 0 && !selectedVehicle) {
-        setSelectedVehicle(INITIAL_VEHICLES[0]);
-      }
-      setError('Modo estatico: los cambios no se guardan porque GitHub Pages no ejecuta el servidor.');
-    } finally {
-      setLoading(false);
-    }
+const SHEET_STORAGE_KEY = 'gestion-pre-entrega-sheet-url';
+const bundledRows = INITIAL_VEHICLES.map(normalizeVehicle);
+
+const fieldAliases: Record<keyof Vehicle, string[]> = {
+  interno: ['INTERNO'],
+  vin: ['VIN'],
+  vehiculo: ['VEHICULO'],
+  color: ['COLOR'],
+  recepcion: ['F. DE RECEPCION', 'F DE RECEPCION', 'RECEPCION'],
+  pago: ['F. DE PAGO', 'F DE PAGO', 'PAGO'],
+  boxUbicacion: ['BOX Y UBICACION', 'BOX Y UBICACIÓN'],
+  box: ['N DE BOX', 'Nº DE BOX', 'NO DE BOX', 'BOX'],
+  ubicacion: ['UBICACION', 'UBICACIÓN'],
+  armadoPor: ['ARMADO POR'],
+  codRadio: ['COD RADIO'],
+  llave: ['LLAVE'],
+  combustible: ['COMBUSTIBLE'],
+  estado: ['ESTADO'],
+  informe: ['INFORME DE LA UNIDAD', 'INFORME'],
+  otroInforme: ['OTRO INFORME'],
+  accesorios: ['ACCESORIOS'],
+  exhibicion: ['EN EXHIBICION', 'EN EXHIBICIÓN'],
+  preEntregado: ['PRE-ENTRGADO', 'PRE-ENTREGADO'],
+  viajes: ['VIAJES'],
+  manual: ['MANUAL'],
+  check: ['CHECK'],
+  destinoActual: ['DESTINO ACTUAL'],
+  destinoTerminal: ['DESTINO TERMINAL'],
+  facturado: ['FACTURADO'],
+  venta: ['VENTA'],
+  vendedor: ['VENDEDOR'],
+  dominio: ['DOMINIO'],
+  ordenes: ['N ORDENES', 'Nº ORDENES', 'NO ORDENES'],
+  controlRealizado: ['CONTROL REALIZADO'],
+  opState: [''],
+};
+
+function clean(value: unknown) {
+  return String(value ?? '').replace(/\r/g, '').trim();
+}
+
+function keyName(value: string) {
+  return clean(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function firstValue(source: Record<string, string>, aliases: string[]) {
+  const normalized = new Map(Object.entries(source).map(([key, value]) => [keyName(key), clean(value)]));
+  for (const alias of aliases) {
+    const value = normalized.get(keyName(alias));
+    if (value) return value;
+  }
+  return '';
+}
+
+function getFamily(vehicle: string) {
+  const value = vehicle.toLowerCase();
+  const families = ['amarok', 't-cross', 'tcross', 'tera', 'nivus', 'taos', 'polo', 'virtus', 'vento', 'voyage', 'gol', 'saveiro', 'tiguan'];
+  const found = families.find((name) => value.includes(name));
+  if (!found) return 'OTROS';
+  if (found === 'tcross') return 'T-CROSS';
+  return found.toUpperCase();
+}
+
+function getOperationalState(row: Pick<Vehicle, 'estado' | 'informe' | 'otroInforme' | 'controlRealizado'>): Vehicle['opState'] {
+  const text = [row.estado, row.informe, row.otroInforme, row.controlRealizado].join(' ').toLowerCase();
+  if (['a reparar', 'rayad', 'aboll', 'golpe', 'faltante', 'perdida', 'pendiente', 'revisar'].some((word) => text.includes(word))) {
+    return 'NOVEDAD';
+  }
+  if (row.estado.toLowerCase().includes('reparada')) return 'REVISAR';
+  return 'OK';
+}
+
+function normalizeVehicle(vehicle: Vehicle): SheetRow {
+  const normalized = {
+    ...vehicle,
+    interno: clean(vehicle.interno),
+    vin: clean(vehicle.vin).toUpperCase(),
+    vehiculo: clean(vehicle.vehiculo),
+    color: clean(vehicle.color),
+    recepcion: clean(vehicle.recepcion),
+    pago: clean(vehicle.pago),
+    boxUbicacion: clean(vehicle.boxUbicacion),
+    box: clean(vehicle.box),
+    ubicacion: clean(vehicle.ubicacion),
+    armadoPor: clean(vehicle.armadoPor),
+    codRadio: clean(vehicle.codRadio),
+    llave: clean(vehicle.llave),
+    combustible: clean(vehicle.combustible),
+    estado: clean(vehicle.estado),
+    informe: clean(vehicle.informe),
+    otroInforme: clean(vehicle.otroInforme),
+    accesorios: clean(vehicle.accesorios),
+    exhibicion: clean(vehicle.exhibicion),
+    preEntregado: clean(vehicle.preEntregado),
+    viajes: clean(vehicle.viajes),
+    manual: clean(vehicle.manual),
+    check: clean(vehicle.check),
+    destinoActual: clean(vehicle.destinoActual),
+    destinoTerminal: clean(vehicle.destinoTerminal),
+    facturado: clean(vehicle.facturado),
+    venta: clean(vehicle.venta),
+    vendedor: clean(vehicle.vendedor),
+    dominio: clean(vehicle.dominio),
+    ordenes: clean(vehicle.ordenes),
+    controlRealizado: clean(vehicle.controlRealizado),
   };
 
-  // Load API Key config
-  const fetchConfig = async () => {
+  const opState = getOperationalState(normalized);
+  const family = getFamily(normalized.vehiculo);
+  return {
+    ...normalized,
+    opState,
+    family,
+    searchable: Object.values(normalized).join(' ').toLowerCase(),
+  };
+}
+
+function rowFromSheet(row: Record<string, string>): SheetRow {
+  const vehicle = Object.fromEntries(
+    Object.entries(fieldAliases).map(([field, aliases]) => [field, field === 'opState' ? 'OK' : firstValue(row, aliases)])
+  ) as Vehicle;
+
+  return normalizeVehicle(vehicle);
+}
+
+function parseCsv(text: string) {
+  const rows: string[][] = [];
+  let current = '';
+  let row: string[] = [];
+  let quoted = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (char === '"' && quoted && next === '"') {
+      current += '"';
+      index += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === ',' && !quoted) {
+      row.push(current);
+      current = '';
+    } else if ((char === '\n' || char === '\r') && !quoted) {
+      if (char === '\r' && next === '\n') index += 1;
+      row.push(current);
+      if (row.some((cell) => cell.trim())) rows.push(row);
+      row = [];
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+
+  row.push(current);
+  if (row.some((cell) => cell.trim())) rows.push(row);
+  const headers = rows.shift()?.map(clean) ?? [];
+  return rows.map((cells) => Object.fromEntries(headers.map((header, index) => [header, clean(cells[index])])));
+}
+
+function toCsvUrl(input: string) {
+  const value = clean(input);
+  const id = value.match(/\/spreadsheets\/d\/([^/]+)/)?.[1];
+  const gid = value.match(/[?&]gid=(\d+)/)?.[1] ?? '0';
+  if (id) return `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`;
+  return value;
+}
+
+function StatusBadge({ state }: { state: Vehicle['opState'] }) {
+  const styles = {
+    OK: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    NOVEDAD: 'border-rose-200 bg-rose-50 text-rose-700',
+    REVISAR: 'border-amber-200 bg-amber-50 text-amber-700',
+  };
+  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-bold ${styles[state]}`}>{state}</span>;
+}
+
+function DataPoint({ label, value, icon: Icon }: { label: string; value: string; icon?: React.ElementType }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3">
+      <div className="flex items-center gap-2 text-[11px] font-bold uppercase text-slate-500">
+        {Icon && <Icon size={14} />}
+        {label}
+      </div>
+      <div className="mt-1 whitespace-pre-line text-sm font-semibold text-slate-900">{value || '-'}</div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [rows, setRows] = useState<SheetRow[]>(bundledRows);
+  const [query, setQuery] = useState('');
+  const [stateFilter, setStateFilter] = useState('TODOS');
+  const [sheetUrl, setSheetUrl] = useState(() => localStorage.getItem(SHEET_STORAGE_KEY) ?? '');
+  const [syncState, setSyncState] = useState<SyncState>('fallback');
+  const [lastSync, setLastSync] = useState('');
+  const [selectedVin, setSelectedVin] = useState(bundledRows[0]?.vin ?? '');
+
+  const syncSheet = async (url = sheetUrl) => {
+    const csvUrl = toCsvUrl(url);
+    if (!csvUrl) {
+      setRows(bundledRows);
+      setSyncState('fallback');
+      setLastSync('');
+      return;
+    }
+
+    setSyncState('syncing');
     try {
-      const res = await fetch('/api/inventory/config');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.apiKey) {
-          setApiKey(data.apiKey);
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching API key:', err);
+      const response = await fetch(csvUrl);
+      if (!response.ok) throw new Error('No se pudo leer la hoja');
+      const parsed = parseCsv(await response.text()).map(rowFromSheet).filter((row) => row.interno || row.vin);
+      if (!parsed.length) throw new Error('La hoja no tiene filas con interno o VIN');
+      setRows(parsed);
+      setSelectedVin(parsed[0].vin);
+      setSyncState('online');
+      setLastSync(new Date().toLocaleString('es-AR'));
+      localStorage.setItem(SHEET_STORAGE_KEY, url);
+    } catch (error) {
+      console.error(error);
+      setRows(bundledRows);
+      setSyncState('error');
+      setLastSync('');
     }
   };
 
   useEffect(() => {
-    fetchInventory();
-    fetchConfig();
+    if (sheetUrl) {
+      syncSheet(sheetUrl);
+    }
   }, []);
 
-  // Update a single vehicle in real-time
-  const handleUpdateVehicle = async (updated: Vehicle): Promise<boolean> => {
-    try {
-      const res = await fetch('/api/inventory/update', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-KEY': apiKey
-        },
-        body: JSON.stringify(updated)
-      });
-      if (res.ok) {
-        // Optimistically update states
-        setVehicles(prev => prev.map(v => v.vin.toUpperCase() === updated.vin.toUpperCase() ? updated : v));
-        setSelectedVehicle(updated);
-        return true;
-      }
-      return false;
-    } catch (err) {
-      console.error(err);
-      return false;
-    }
-  };
+  const filteredRows = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return rows.filter((row) => {
+      const matchesQuery = !needle || row.searchable.includes(needle);
+      const matchesState = stateFilter === 'TODOS' || row.opState === stateFilter;
+      return matchesQuery && matchesState;
+    });
+  }, [query, rows, stateFilter]);
 
-  // Delete vehicle
-  const handleDeleteVehicle = async (vin: string): Promise<boolean> => {
-    try {
-      const res = await fetch(`/api/inventory/${vin}`, {
-        method: 'DELETE',
-        headers: {
-          'X-API-KEY': apiKey
-        }
-      });
-      if (res.ok) {
-        setVehicles(prev => prev.filter(v => v.vin.toUpperCase() !== vin.toUpperCase()));
-        setSelectedVehicle(null);
-        return true;
-      }
-      return false;
-    } catch (err) {
-      console.error(err);
-      return false;
-    }
-  };
-
-  // Handle adding custom manual unit
-  const handleAddVehicle = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newVehicle.vin || !newVehicle.interno || !newVehicle.vehiculo) {
-      alert("Por favor rellene los campos obligatorios (Interno, VIN, Vehículo)");
-      return;
-    }
-
-    const payload: Vehicle = {
-      interno: newVehicle.interno,
-      vin: newVehicle.vin.toUpperCase(),
-      vehiculo: newVehicle.vehiculo,
-      color: newVehicle.color,
-      recepcion: newVehicle.recepcion,
-      pago: newVehicle.pago,
-      boxUbicacion: newVehicle.boxUbicacion,
-      box: newVehicle.box,
-      ubicacion: newVehicle.ubicacion,
-      armadoPor: '',
-      codRadio: '',
-      llave: newVehicle.llave,
-      combustible: '✘',
-      estado: newVehicle.estado,
-      informe: 'Ingresado manualmente por el portal',
-      otroInforme: '',
-      accesorios: '',
-      exhibicion: '',
-      preEntregado: '',
-      viajes: '',
-      manual: '',
-      check: '',
-      destinoActual: 'LAS LOMAS',
-      destinoTerminal: 'Casa Central - Jujuy',
-      facturado: 'No',
-      venta: '',
-      vendedor: '',
-      dominio: '',
-      ordenes: '',
-      controlRealizado: 'NO',
-      opState: newVehicle.estado === 'OK' ? 'OK' : newVehicle.estado === 'A REPARAR' ? 'NOVEDAD' : 'REVISAR'
-    };
-
-    try {
-      const res = await fetch('/api/inventory/update', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-KEY': apiKey
-        },
-        body: JSON.stringify(payload)
-      });
-
-      if (res.ok) {
-        setVehicles(prev => [payload, ...prev]);
-        setSelectedVehicle(payload);
-        setShowAddModal(false);
-        setNewVehicle({
-          interno: '',
-          vin: '',
-          vehiculo: '',
-          color: '',
-          recepcion: new Date().toLocaleDateString('es-AR'),
-          pago: 'NO PAGADO',
-          boxUbicacion: '1-C-1',
-          box: '1',
-          ubicacion: 'C-1',
-          llave: 'A',
-          estado: 'OK',
-        });
-      } else {
-        alert("Ocurrió un error al intentar agregar la unidad.");
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Error de conexión.");
-    }
-  };
-
-  // Derive stats dynamically
-  const stats: DashboardStats = useMemo(() => {
-    const total = vehicles.length;
-    const ok = vehicles.filter(v => v.opState === 'OK').length;
-    const conNovedad = vehicles.filter(v => v.opState === 'NOVEDAD').length;
-    const conRevisar = vehicles.filter(v => v.opState === 'REVISAR').length;
-    const conManual = vehicles.filter(v => v.manual && v.manual !== '✘').length;
-    const facturado = vehicles.filter(v => v.facturado.toLowerCase().includes('si')).length;
-    const noPago = vehicles.filter(v => v.pago.toUpperCase().includes('NO')).length;
-
+  const selected = rows.find((row) => row.vin === selectedVin) ?? filteredRows[0] ?? rows[0];
+  const stats = useMemo(() => {
+    const count = (state: Vehicle['opState']) => rows.filter((row) => row.opState === state).length;
     return {
-      total,
-      ok,
-      novedad: conNovedad,
-      revisar: conRevisar,
-      conManual,
-      facturado,
-      noPago
+      total: rows.length,
+      ok: count('OK'),
+      novedad: count('NOVEDAD'),
+      revisar: count('REVISAR'),
+      sinPago: rows.filter((row) => row.pago.toLowerCase().includes('no')).length,
+      facturado: rows.filter((row) => row.facturado.toLowerCase().includes('si')).length,
     };
-  }, [vehicles]);
+  }, [rows]);
 
-  // Derive top locations & models for charts
-  const topFamilies = useMemo(() => {
-    const counts: Record<string, number> = {};
-    vehicles.forEach(v => {
-      const name = v.vehiculo.split(' ')[0].toUpperCase();
-      const fam = ['AMAROK', 'NIVUS', 'POLO', 'T-CROSS', 'TERA', 'TAOS', 'GOL', 'VOYAGE', 'UP!', 'VIRTUS'].includes(name) ? name : 'OTROS';
-      counts[fam] = (counts[fam] || 0) + 1;
-    });
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
-  }, [vehicles]);
-
-  const topLocations = useMemo(() => {
-    const counts: Record<string, number> = {};
-    vehicles.forEach(v => {
-      const u = v.ubicacion || 'SIN DATO';
-      counts[u] = (counts[u] || 0) + 1;
-    });
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
-  }, [vehicles]);
+  const syncCopy = {
+    idle: 'Listo para sincronizar',
+    syncing: 'Sincronizando con Sheet',
+    online: 'Sincronizado con Google Sheets',
+    fallback: 'Usando datos de muestra',
+    error: 'No se pudo sincronizar, usando muestra',
+  }[syncState];
 
   return (
-    <div id="root-portal" className="min-h-screen bg-slate-50 font-sans text-slate-700 flex selection:bg-indigo-600 selection:text-white">
-      
-      {/* Sidebar Navigation */}
-      <Sidebar 
-        currentView={currentView} 
-        onViewChange={(v) => {
-          setCurrentView(v);
-          // Auto select first vehicle matching view if any to populate panel
-          if (v === 'seguimiento') {
-            const seg = vehicles.find(item => item.opState === 'NOVEDAD');
-            if (seg) setSelectedVehicle(seg);
-          }
-        }} 
-        title="VW Autosol"
-        subtitle="PDI Jujuy"
-      />
-
-      {/* Main Panel Content */}
-      <main className="flex-1 flex flex-col h-screen overflow-hidden">
-        
-        {/* Top Header */}
-        <header className="px-8 py-5 border-b border-slate-250/80 bg-white shrink-0 flex items-center justify-between shadow-xs">
+    <div className="min-h-screen bg-slate-100 text-slate-900">
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h1 className="text-xl font-bold text-slate-800 tracking-tight leading-none">
-              {currentView === 'inicio' && 'Control Visual de Internos'}
-              {currentView === 'stock' && 'Estadísticas y Stock General'}
-              {currentView === 'seguimiento' && 'Control de Novedades y Daños (Fardo)'}
-            </h1>
-            <p className="text-xs text-slate-500 font-sans mt-2">
-              Inventario inteligente en tiempo real sincronizado con hoja maestra de Google Sheets.
+            <div className="flex items-center gap-3">
+              <div className="grid h-10 w-10 place-items-center rounded-lg bg-slate-900 text-white">
+                <Car size={21} />
+              </div>
+              <div>
+                <h1 className="text-2xl font-black tracking-tight text-slate-950">Gestion Pre-Entrega</h1>
+                <p className="text-sm text-slate-500">Consulta operativa de unidades, llaves, manuales y estado PDI.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-bold ${syncState === 'online' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+              {syncState === 'online' ? <Wifi size={14} /> : <WifiOff size={14} />}
+              {syncCopy}
+            </span>
+            {lastSync && <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600"><Clock3 size={14} />{lastSync}</span>}
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto grid max-w-7xl gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[minmax(0,1fr)_390px]">
+        <section className="space-y-5">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <DataPoint label="Unidades" value={String(stats.total)} icon={Car} />
+            <DataPoint label="OK" value={String(stats.ok)} icon={CheckCircle2} />
+            <DataPoint label="Novedad" value={String(stats.novedad)} icon={AlertTriangle} />
+            <DataPoint label="Revisar" value={String(stats.revisar)} icon={ShieldCheck} />
+            <DataPoint label="No pagado" value={String(stats.sinPago)} icon={FileSpreadsheet} />
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-white p-3">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_160px_120px]">
+              <label className="relative block">
+                <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                <input
+                  className="h-11 w-full rounded-md border border-slate-300 bg-white pl-10 pr-3 text-sm font-semibold outline-none transition focus:border-slate-900"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Buscar interno, VIN, dominio, modelo, color, box, vendedor..."
+                />
+              </label>
+              <select
+                className="h-11 rounded-md border border-slate-300 bg-white px-3 text-sm font-bold outline-none focus:border-slate-900"
+                value={stateFilter}
+                onChange={(event) => setStateFilter(event.target.value)}
+              >
+                <option value="TODOS">Todos</option>
+                <option value="OK">OK</option>
+                <option value="NOVEDAD">Novedad</option>
+                <option value="REVISAR">Revisar</option>
+              </select>
+              <button
+                className="h-11 rounded-md bg-slate-900 px-4 text-sm font-bold text-white transition hover:bg-slate-700"
+                onClick={() => {
+                  setQuery('');
+                  setStateFilter('TODOS');
+                }}
+              >
+                Limpiar
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <h2 className="text-sm font-black uppercase text-slate-700">Unidades encontradas</h2>
+              <span className="text-xs font-bold text-slate-500">{filteredRows.length} resultados</span>
+            </div>
+            <div className="max-h-[590px] overflow-auto">
+              <table className="w-full min-w-[920px] border-collapse text-left">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] uppercase text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3">Interno</th>
+                    <th className="px-4 py-3">VIN</th>
+                    <th className="px-4 py-3">Vehiculo</th>
+                    <th className="px-4 py-3">Box</th>
+                    <th className="px-4 py-3">Llave</th>
+                    <th className="px-4 py-3">Manual</th>
+                    <th className="px-4 py-3">Estado</th>
+                    <th className="px-4 py-3">Destino</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-sm">
+                  {filteredRows.map((row) => (
+                    <tr
+                      key={`${row.interno}-${row.vin}`}
+                      className={`cursor-pointer transition hover:bg-slate-50 ${selected?.vin === row.vin ? 'bg-sky-50' : ''}`}
+                      onClick={() => setSelectedVin(row.vin)}
+                    >
+                      <td className="px-4 py-3 font-black text-slate-950">{row.interno}</td>
+                      <td className="px-4 py-3 font-mono text-xs font-bold text-slate-700">{row.vin}</td>
+                      <td className="px-4 py-3">
+                        <div className="font-bold text-slate-900">{row.vehiculo}</div>
+                        <div className="text-xs font-semibold text-slate-500">{row.color}</div>
+                      </td>
+                      <td className="px-4 py-3 font-bold">{row.boxUbicacion || row.ubicacion || '-'}</td>
+                      <td className="px-4 py-3 font-bold">{row.llave || '-'}</td>
+                      <td className="px-4 py-3 font-bold">{row.manual || '-'}</td>
+                      <td className="px-4 py-3"><StatusBadge state={row.opState} /></td>
+                      <td className="px-4 py-3 text-xs font-semibold text-slate-600">{row.destinoActual || row.destinoTerminal || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <aside className="space-y-5">
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-sm font-black uppercase text-slate-700">Conexion Sheet</h2>
+              <FileSpreadsheet size={18} className="text-slate-500" />
+            </div>
+            <input
+              className="h-10 w-full rounded-md border border-slate-300 px-3 text-xs font-semibold outline-none focus:border-slate-900"
+              value={sheetUrl}
+              onChange={(event) => setSheetUrl(event.target.value)}
+              placeholder="Pegar URL de Google Sheets o CSV publicado"
+            />
+            <button
+              className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-slate-900 text-sm font-bold text-white transition hover:bg-slate-700 disabled:cursor-wait disabled:opacity-70"
+              disabled={syncState === 'syncing'}
+              onClick={() => syncSheet()}
+            >
+              <RefreshCw size={16} className={syncState === 'syncing' ? 'animate-spin' : ''} />
+              Sincronizar
+            </button>
+            <p className="mt-3 text-xs leading-5 text-slate-500">
+              La hoja debe estar publicada o accesible con enlace. La web solo visualiza datos, no modifica el Sheet.
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={fetchInventory}
-              disabled={loading}
-              className="p-2.5 rounded-xl bg-slate-50 border border-slate-255 text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
-              title="Refrescar Inventario"
-            >
-              <RefreshCw size={15} className={`stroke-[2.5] ${loading ? 'animate-spin' : ''}`} />
-            </button>
+          {selected && (
+            <div className="rounded-lg border border-slate-200 bg-white p-4">
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs font-black uppercase text-slate-500">Ficha de unidad</div>
+                  <h2 className="mt-1 text-2xl font-black text-slate-950">{selected.interno}</h2>
+                  <div className="font-mono text-xs font-bold text-slate-500">{selected.vin}</div>
+                </div>
+                <StatusBadge state={selected.opState} />
+              </div>
 
-            <div className="flex items-center gap-2.5 px-3.5 py-1.5 rounded-full bg-slate-50 border border-slate-200">
-              <span className="w-2 h-2 rounded-full bg-indigo-600 animate-pulse"></span>
-              <span className="text-xs font-semibold text-slate-700">Nelson Calidad</span>
+              <div className="space-y-3">
+                <DataPoint label="Vehiculo" value={selected.vehiculo} icon={Car} />
+                <div className="grid grid-cols-2 gap-3">
+                  <DataPoint label="Box" value={selected.boxUbicacion || selected.ubicacion} icon={MapPin} />
+                  <DataPoint label="Llave" value={selected.llave} icon={KeyRound} />
+                  <DataPoint label="Manual" value={selected.manual} icon={BookOpenCheck} />
+                  <DataPoint label="Combustible" value={selected.combustible} icon={Fuel} />
+                </div>
+                <DataPoint label="Estado de unidad" value={selected.estado || selected.informe} icon={ShieldCheck} />
+                <DataPoint label="Informe / novedad" value={[selected.informe, selected.otroInforme].filter(Boolean).join('\n')} icon={AlertTriangle} />
+                <div className="grid grid-cols-2 gap-3">
+                  <DataPoint label="Pago" value={selected.pago} />
+                  <DataPoint label="Facturado" value={selected.facturado} />
+                  <DataPoint label="Dominio" value={selected.dominio} />
+                  <DataPoint label="Ordenes" value={selected.ordenes} />
+                </div>
+                <DataPoint label="Destino" value={[selected.destinoActual, selected.destinoTerminal].filter(Boolean).join('\n')} icon={MapPin} />
+                <DataPoint label="Venta / vendedor" value={[selected.venta, selected.vendedor].filter(Boolean).join('\n')} />
+                <DataPoint label="Exhibicion / pre-entregado" value={[selected.exhibicion, selected.preEntregado].filter(Boolean).join('\n')} />
+              </div>
             </div>
-          </div>
-        </header>
-
-        {/* View Space wrapper */}
-        <div className="flex-1 overflow-hidden p-8">
-          {error && (
-            <div className="mb-6 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl p-4 text-xs font-semibold flex items-center justify-between shadow-xs">
-              <span>{error}</span>
-              <button onClick={fetchInventory} className="underline text-rose-800 hover:text-rose-950 font-bold ml-4 cursor-pointer">Reintentar</button>
-            </div>
           )}
-
-          {currentView === 'inicio' && (
-            <DashboardView
-              vehicles={vehicles}
-              selectedVehicle={selectedVehicle}
-              setSelectedVehicle={setSelectedVehicle}
-              stats={stats}
-              handleUpdateVehicle={handleUpdateVehicle}
-              handleDeleteVehicle={handleDeleteVehicle}
-            />
-          )}
-
-          {currentView === 'buscador' && (
-            <SearchView
-              vehicles={vehicles}
-              selectedVehicle={selectedVehicle}
-              setSelectedVehicle={setSelectedVehicle}
-              handleUpdateVehicle={handleUpdateVehicle}
-              handleDeleteVehicle={handleDeleteVehicle}
-            />
-          )}
-
-          {currentView === 'stock' && (
-            <DistributionView
-              topFamilies={topFamilies}
-              topLocations={topLocations}
-            />
-          )}
-
-          {currentView === 'seguimiento' && (
-            <FollowupView
-              vehicles={vehicles}
-              selectedVehicle={selectedVehicle}
-              setSelectedVehicle={setSelectedVehicle}
-              stats={stats}
-              handleUpdateVehicle={handleUpdateVehicle}
-              handleDeleteVehicle={handleDeleteVehicle}
-            />
-          )}
-
-          {currentView === 'historial' && (
-            <HistoryView />
-          )}
-        </div>
-
+        </aside>
       </main>
-
     </div>
   );
 }
