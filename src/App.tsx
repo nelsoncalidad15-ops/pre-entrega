@@ -196,6 +196,8 @@ function parseCsv(text: string) {
 
 function toCsvUrl(input: string) {
   const value = clean(input);
+  if (!value) return '';
+  if (value.includes('/spreadsheets/d/e/') || value.includes('output=csv')) return value;
   const id = value.match(/\/spreadsheets\/d\/([^/]+)/)?.[1];
   const gid = value.match(/[?&]gid=(\d+)/)?.[1] ?? '0';
   if (id) return `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`;
